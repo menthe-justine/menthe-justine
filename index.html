@@ -177,6 +177,31 @@ h2.sec{font-family:var(--disp);font-size:15px;font-weight:700;margin:22px 0 0;le
   border-radius:14px;padding:12px 14px;font-size:12.5px;line-height:1.55;color:var(--ink-2)}
 .hintbox b{color:var(--ink)}
 
+/* ---------- remboursements ---------- */
+.rb{padding:13px 0}
+.rb + .rb{border-top:1px solid var(--line)}
+.rb-top{display:flex;align-items:baseline;gap:9px}
+.rb-top .em{font-size:17px;align-self:center;flex:none}
+.rb-top .nm{font-weight:600;font-size:13.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rb-top .pv{margin-left:auto;font-weight:700;font-size:14.5px;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.rb-sub{font-size:11.5px;color:var(--ink-3);margin-top:3px;font-weight:500}
+.rb-bar{height:7px;border-radius:99px;background:var(--surface-3);overflow:hidden;margin:9px 0 6px}
+.rb-bar i{display:block;height:100%;border-radius:99px;background:var(--brand);
+  transition:width .5s cubic-bezier(.3,1,.4,1)}
+.rb-line{display:flex;gap:8px;font-size:11.5px;color:var(--ink-3);font-weight:500;align-items:center}
+.rb-line b{color:var(--ink-2);font-weight:600;font-variant-numeric:tabular-nums}
+.rb-line .r{margin-left:auto}
+.rb-act{margin-top:9px}
+.rb-act button{font-size:11.5px;font-weight:600;padding:6px 11px;border-radius:9px;
+  border:1px solid var(--line);background:var(--surface-2);color:var(--ink-2)}
+.rb-act button:hover{background:var(--surface-3)}
+.sums{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);
+  border-radius:14px;overflow:hidden;margin-top:14px}
+.sums div{background:var(--surface);padding:13px 14px}
+.sums .k{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+.sums .v{font-family:var(--disp);font-weight:800;font-size:20px;letter-spacing:-.02em;margin-top:5px;
+  font-variant-numeric:tabular-nums}
+
 /* ---------- plant ---------- */
 .plant{display:flex;align-items:center;gap:16px}
 .plant svg{flex:none}
@@ -497,6 +522,44 @@ function bilan(mk){
   return b;
 }
 
+/* ---------- avances à se faire rembourser ---------- */
+/* Une dépense marquée « à me faire rembourser » reste comptée en entier le mois où elle
+   est payée : l'argent est bien sorti. Chaque remboursement crée une ligne NÉGATIVE dans
+   la même catégorie, datée du jour où l'argent revient — jamais une « rentrée », sinon le
+   revenu du mois gonflerait et décalerait tous les repères 50/30/20. */
+function avances(){
+  var out = [];
+  state.tx.forEach(function(t){
+    if(!t.rb || t.type === "revenu") return;
+    var recu = 0, lignes = [];
+    state.tx.forEach(function(r){
+      if(r.rbDe === t.id){ recu += -r.montant; lignes.push(r); }
+    });
+    var c = catById(t.cat);
+    out.push({
+      t:t, cat:c, paye:t.montant, recu:recu,
+      reste: Math.max(0, t.montant - recu),
+      solde: t.montant - recu,
+      lignes: lignes,
+      fini: recu >= t.montant - 0.005
+    });
+  });
+  out.sort(function(a,b){
+    if(a.fini !== b.fini) return a.fini ? 1 : -1;
+    return a.t.date < b.t.date ? 1 : -1;
+  });
+  return out;
+}
+function totauxAvances(){
+  var a = avances(), s = {paye:0, recu:0, attente:0, n:0, nAttente:0};
+  a.forEach(function(x){
+    s.paye += x.paye; s.recu += x.recu; s.n++;
+    if(!x.fini){ s.attente += x.reste; s.nAttente++; }
+  });
+  s.charge = s.paye - s.recu;
+  return s;
+}
+
 /* ---------- épargne : poches, cumuls, objectifs ---------- */
 function poches(){
   return state.cats.filter(function(c){ return c.gr === "epargne"; });
@@ -536,8 +599,13 @@ function sommePoche(catId, p){
   });
   return t;
 }
+/* Cumul d'une poche = ce qu'elle avait déjà en banque avant l'app + tous les
+   versements saisis depuis. Le solde de départ n'entre JAMAIS dans sommePoche() :
+   sinon il serait compté comme une épargne du mois en cours et fausserait les
+   jauges 50/30/20 et le « reste à répartir ». */
 function cumulPoche(catId){
-  var t = 0;
+  var c = catById(catId);
+  var t = (c && c.solde) || 0;
   state.tx.forEach(function(x){ if(x.type !== "revenu" && x.cat === catId) t += x.montant; });
   return t;
 }
@@ -737,7 +805,7 @@ function renderAccueil(){
     var cibleEur = b.revenu * cible / 100;
     var pct = b.revenu > 0 ? montant / b.revenu * 100 : 0;
     var ratio = cibleEur > 0 ? montant / cibleEur : 0;
-    var fill = Math.min(ratio / 1.5, 1) * 100;
+    var fill = Math.max(0, Math.min(ratio / 1.5, 1)) * 100;
     var over = ratio > 1.5;
     var col = GROUPS[g].color;
     /* Sens inversé pour l'épargne : y être en dessous n'est pas une bonne
@@ -809,6 +877,29 @@ function renderAccueil(){
        '<span class="ch">›</span></button>';
   h += '</div>';
 
+  /* Suivi des avances : la carte n'apparaît que si elle en a marqué au moins une */
+  var ta = totauxAvances();
+  if(ta.n > 0){
+    h += '<h2 class="sec">Tes remboursements</h2>'+
+      '<div class="card">'+
+      '<div style="display:flex;align-items:baseline;gap:10px">'+
+        '<div><div class="eyebrow">En attente</div>'+
+        '<div class="num" style="font-family:var(--disp);font-weight:800;font-size:28px;letter-spacing:-.03em;margin-top:5px;color:'+
+        (ta.attente > 0 ? 'var(--or)' : 'var(--brand)')+'">'+eur(ta.attente)+'</div></div>'+
+        '<div style="margin-left:auto;text-align:right"><div class="eyebrow">Déjà revenu</div>'+
+        '<div class="num" style="font-weight:700;font-size:17px;margin-top:7px">'+eur(ta.recu)+'</div></div>'+
+      '</div>'+
+      '<p class="note" style="margin-top:10px">'+
+      (ta.nAttente > 0
+        ? ta.nAttente+" dépense"+(ta.nAttente>1?"s":"")+" avancée"+(ta.nAttente>1?"s":"")+
+          " sur "+ta.n+", en attente de remboursement."
+        : "Tout est revenu. "+eur(ta.charge)+" sont restés à ta charge.")+
+      '</p>'+
+      '<button class="epcta" data-act="rbopen">Détail et saisie des remboursements'+
+      '<span class="ch">›</span></button>'+
+      '</div>';
+  }
+
   /* dernières saisies */
   var recent = state.tx.filter(function(t){ return monthKey(t.date)===curMK; })
     .sort(function(a,b2){ return a.date < b2.date ? 1 : a.date > b2.date ? -1 : (a.ts<b2.ts?1:-1); })
@@ -830,16 +921,19 @@ function renderAccueil(){
 function txRow(t){
   var c = catById(t.cat);
   var isRev = t.type === "revenu";
+  var isRemb = !!t.rbDe;
   var col = isRev ? "var(--brand)" : (c ? GROUPS[c.gr].color : "var(--line-strong)");
   var sub = [];
   if(t.note) sub.push(t.note);
   sub.push(new Date(t.date+"T12:00:00").getDate()+" "+MOIS[+t.date.slice(5,7)-1]);
   var open = openTx === t.id;
+  var titre = isRemb ? "Remboursement" : (isRev ? (t.note||"Revenu") : (c?c.nom:"Sans catégorie"));
   var s = '<button class="tx" style="border-left-color:'+col+'" data-act="txopen" data-id="'+t.id+'">'+
-    '<span class="em">'+(isRev ? "💶" : (c?c.em:"•"))+'</span>'+
-    '<span class="m"><b>'+esc(isRev ? (t.note||"Revenu") : (c?c.nom:"Sans catégorie"))+'</b>'+
+    '<span class="em">'+(isRemb ? "↩️" : isRev ? "💶" : (c?c.em:"•"))+'</span>'+
+    '<span class="m"><b>'+esc(titre)+'</b>'+
     '<span>'+esc(sub.join(" · "))+'</span></span>'+
-    '<span class="a" style="color:'+(isRev?"var(--brand)":"var(--ink)")+'">'+(isRev?"+":"")+eur2(t.montant)+'</span>'+
+    '<span class="a" style="color:'+((isRev||isRemb)?"var(--brand)":"var(--ink)")+'">'+
+    ((isRev||isRemb)?"+":"")+eur2(Math.abs(t.montant))+'</span>'+
     '</button>';
   if(open){
     s += '<div class="txdel">'+
@@ -991,7 +1085,7 @@ function renderReglages(){
    ============================================================ */
 var draft = null;
 function newDraft(){
-  return { amount:"", type:"depense", cat:null, note:"", date:todayISO(), recur:false };
+  return { amount:"", type:"depense", cat:null, note:"", date:todayISO(), recur:false, rb:false };
 }
 function openSaisie(){
   draft = newDraft();
@@ -1061,6 +1155,9 @@ function renderSheet(){
     h += '<button class="switch" style="margin-top:14px" data-act="srecur" aria-pressed="'+draft.recur+'">'+
       '<span class="m"><b>Chaque mois</b><span>Te sera reproposé au début du mois prochain</span></span>'+
       '<span class="kn"></span></button>';
+    h += '<button class="switch" style="margin-top:9px" data-act="srb" aria-pressed="'+draft.rb+'">'+
+      '<span class="m"><b>À me faire rembourser</b><span>Santé, frais avancés… tu suivras ce qui revient</span></span>'+
+      '<span class="kn"></span></button>';
   }
 
   h += '</div><div class="sheet-f">'+
@@ -1096,6 +1193,7 @@ function sousTitrePoche(x, p, mode){
     bouts.push("≈ "+eur(x.v / n)+" par mois");
   }
   if(x.cum > x.v) bouts.push(eur(x.cum)+" au total");
+  if(x.c.solde > 0) bouts.push("dont "+eur(x.c.solde)+" d'avant l'app");
   if(!bouts.length && x.v > 0) bouts.push("premier versement");
   if(!bouts.length) bouts.push("rien versé sur la période");
   if(x.c.ech) bouts.push("échéance "+mkLabel(x.c.ech));
@@ -1142,7 +1240,7 @@ function renderEpargne(){
        '<div style="font-family:var(--disp);font-weight:800;font-size:34px;letter-spacing:-.03em;margin:7px 0 2px" class="num">'+eur(tot)+'</div>';
   var sous = [];
   if(epMode === "annee") sous.push(nMois+" mois avec des saisies");
-  if(cumTot > tot) sous.push(eur(cumTot)+" au total depuis le début");
+  if(cumTot > tot) sous.push(eur(cumTot)+" au total aujourd'hui");
   if(sous.length) h += '<p class="note" style="margin-top:6px">'+esc(sous.join(" · "))+'.</p>';
   if(tot > 0){
     h += '<div class="epbar" style="margin-top:14px" role="img" aria-label="Répartition entre tes poches">'+
@@ -1188,12 +1286,18 @@ function renderEpargne(){
       }
     }
     h += '<div class="potbtns">'+
-      '<button data-act="epobj" data-id="'+x.c.id+'">'+(x.c.obj > 0 ? "Modifier l\'objectif" : "Fixer un objectif")+'</button>'+
+      '<button data-act="epobj" data-id="'+x.c.id+'">Modifier cette poche</button>'+
       '</div>';
   });
   h += '</div>';
 
   h += '<div class="row" style="margin-top:14px"><button class="btn ghost tiny" data-act="potadd">+ Nouvelle poche</button></div>';
+  if(!pots.some(function(c){ return c.solde > 0; })){
+    h += '<div class="hintbox" style="margin-top:14px"><b>Tu épargnais déjà avant ?</b> '+
+      'Ouvre « Modifier cette poche » et renseigne ce que tu as déjà de côté sur ton compte. '+
+      'Ça s\'ajoute au total et à la progression vers l\'objectif, sans être compté comme une '+
+      'épargne du mois en cours.</div>';
+  }
 
   var aUrgence = pots.some(function(c){ return /urgence|s[ée]curit|pr[ée]caution/i.test(c.nom); });
   if(aUrgence) h += '<div class="hintbox" style="margin-top:18px">'+
@@ -1202,6 +1306,94 @@ function renderEpargne(){
     'tes dépenses essentielles'+
     (moyenneEssentiel() > 0 ? ', soit environ '+eur(moyenneEssentiel()*3)+' à '+eur(moyenneEssentiel()*6)+
       ' d\'après tes saisies' : '')+'. Une fois plein, l\'argent est plus utile ailleurs.</div>';
+
+  h += '</div>';
+  el.innerHTML = h;
+}
+
+/* ============================================================
+   Écran des remboursements
+   ============================================================ */
+function openRemb(){ renderRemb(); }
+function closeRemb(){
+  var s = document.getElementById("rbsheet");
+  if(s) s.remove();
+}
+function renderRemb(){
+  var el = document.getElementById("rbsheet");
+  if(!el){
+    el = document.createElement("div");
+    el.id = "rbsheet"; el.className = "sheet";
+    el.setAttribute("role","dialog"); el.setAttribute("aria-modal","true");
+    el.setAttribute("aria-label","Suivi de tes remboursements");
+    document.body.appendChild(el);
+  }
+  var liste = avances(), s = totauxAvances();
+
+  var h = '<div class="sheet-h"><h2>Tes remboursements</h2>'+
+    '<button class="close" data-act="rbclose" aria-label="Fermer">×</button></div>'+
+    '<div class="sheet-b">';
+
+  h += '<div class="sums">'+
+    '<div><div class="k">Avancé</div><div class="v num">'+eur(s.paye)+'</div></div>'+
+    '<div><div class="k">Remboursé</div><div class="v num" style="color:var(--brand)">'+eur(s.recu)+'</div></div>'+
+    '<div><div class="k">En attente</div><div class="v num" style="color:'+(s.attente>0?"var(--or)":"var(--ink)")+'">'+eur(s.attente)+'</div></div>'+
+    '<div><div class="k">Coût réel</div><div class="v num">'+eur(s.charge)+'</div></div>'+
+    '</div>';
+
+  if(!liste.length){
+    h += '<div class="empty" style="padding-top:48px"><h3>Rien à suivre pour l\'instant</h3>'+
+      '<p>En saisissant une dépense, active « À me faire rembourser ». Elle apparaîtra ici '+
+      'jusqu\'à ce que l\'argent soit revenu.</p></div></div>';
+    el.innerHTML = h;
+    return;
+  }
+
+  var enAttente = liste.filter(function(x){ return !x.fini; });
+  var finis = liste.filter(function(x){ return x.fini; });
+
+  function bloc(x){
+    var nom = x.t.note || (x.cat ? x.cat.nom : "Dépense");
+    var r = x.paye > 0 ? Math.min(x.recu / x.paye, 1) : 0;
+    var b = '<div class="rb">'+
+      '<div class="rb-top">'+
+        '<span class="em">'+(x.cat ? x.cat.em : "•")+'</span>'+
+        '<span class="nm">'+esc(nom)+'</span>'+
+        '<span class="pv num">'+eur2(x.paye)+'</span>'+
+      '</div>'+
+      '<div class="rb-sub">'+esc(dateCourte(x.t.date))+(x.cat ? ' · '+esc(x.cat.nom) : '')+'</div>'+
+      '<div class="rb-bar"><i style="width:'+(r*100).toFixed(1)+'%"></i></div>'+
+      '<div class="rb-line"><b>'+eur2(x.recu)+'</b> remboursé'+
+      '<span class="r">'+(x.fini ? '<span class="full">soldé</span>'
+                                 : 'reste '+eur2(x.reste)+' à recevoir')+'</span></div>';
+    if(x.lignes.length){
+      b += '<div class="rb-sub" style="margin-top:6px">'+
+        x.lignes.map(function(r2){ return "+"+eur2(-r2.montant)+" le "+dateCourte(r2.date); }).join(" · ")+
+        '</div>';
+    }
+    if(!x.fini){
+      b += '<div class="rb-act">'+
+        '<button data-act="rbadd" data-id="'+x.t.id+'">Noter un remboursement</button>'+
+        '</div>';
+    }
+    b += '</div>';
+    return b;
+  }
+
+  if(enAttente.length){
+    h += '<h2 class="sec" style="margin-top:22px">En attente ('+enAttente.length+')</h2>'+
+      '<div class="card" style="margin-top:10px">'+enAttente.map(bloc).join("")+'</div>';
+  }
+  if(finis.length){
+    h += '<h2 class="sec" style="margin-top:22px">Soldées ('+finis.length+')</h2>'+
+      '<div class="card" style="margin-top:10px">'+finis.map(bloc).join("")+'</div>';
+  }
+
+  h += '<div class="hintbox" style="margin-top:18px">'+
+    '<b>Comment c\'est compté.</b> La dépense reste comptée en entier le mois où tu l\'as payée — '+
+    'l\'argent est bien sorti. Chaque remboursement vient en déduction de la même catégorie, '+
+    'au mois où il arrive. Il n\'est pas traité comme un revenu, donc tes repères 50/30/20 '+
+    'ne bougent pas.</div>';
 
   h += '</div>';
   el.innerHTML = h;
@@ -1349,6 +1541,7 @@ document.addEventListener("click", function(ev){
   if(a === "stype"){ draft.type = el.getAttribute("data-v"); renderSheet(); return; }
   if(a === "scat"){ draft.cat = el.getAttribute("data-id"); renderSheet(); return; }
   if(a === "srecur"){ draft.recur = !draft.recur; renderSheet(); return; }
+  if(a === "srb"){ draft.rb = !draft.rb; renderSheet(); return; }
   if(a === "key"){
     var k = el.getAttribute("data-k");
     if(k === "del") draft.amount = draft.amount.slice(0,-1);
@@ -1367,6 +1560,7 @@ document.addEventListener("click", function(ev){
     if(v <= 0) return;
     var t = { id:uid(), ts:Date.now(), date:draft.date, montant:v,
               type:draft.type, cat:draft.type==="revenu"?null:draft.cat, note:draft.note.trim() };
+    if(draft.rb && draft.type === "depense") t.rb = true;
     state.tx.push(t);
     if(draft.recur && draft.type === "depense"){
       var c0 = catById(draft.cat);
@@ -1386,8 +1580,10 @@ document.addEventListener("click", function(ev){
   if(a === "txclose"){ openTx = null; render(); return; }
   if(a === "txdel"){
     var did = el.getAttribute("data-id");
-    state.tx = state.tx.filter(function(t){ return t.id !== did; });
-    openTx = null; save(); render(); toast("Ligne supprimée");
+    state.tx = state.tx.filter(function(t){ return t.id !== did && t.rbDe !== did; });
+    openTx = null; save(); render();
+    if(document.getElementById("rbsheet")) renderRemb();
+    toast("Ligne supprimée");
     return;
   }
 
@@ -1453,6 +1649,24 @@ document.addEventListener("click", function(ev){
     return;
   }
   /* épargne */
+  if(a === "rbopen"){ openRemb(); return; }
+  if(a === "rbclose"){ closeRemb(); return; }
+  if(a === "rbadd"){
+    var av = null, aid = el.getAttribute("data-id");
+    avances().forEach(function(x){ if(x.t.id === aid) av = x; });
+    if(!av) return;
+    openModal({
+      title:"Remboursement reçu",
+      intro:(av.t.note || (av.cat?av.cat.nom:"Dépense"))+" — "+eur2(av.paye)+" avancés, "+
+            eur2(av.reste)+" encore attendus.",
+      kind:"remb", avanceId:aid, submit:"Enregistrer",
+      fields:[
+        {key:"m", label:"Montant reçu (€)", type:"number", value: Math.round(av.reste*100)/100},
+        {key:"d", label:"Date de réception", type:"date", value: todayISO()}
+      ]
+    });
+    return;
+  }
   if(a === "epopen"){ openEpargne(); return; }
   if(a === "epclose"){ closeEpargne(); return; }
   if(a === "epmode"){
@@ -1471,13 +1685,14 @@ document.addEventListener("click", function(ev){
     var moy = moyenneEssentiel();
     var urgence = /urgence|s[ée]curit|pr[ée]caution/i.test(pc.nom);
     openModal({
-      title:"Objectif — "+pc.nom,
+      title:pc.em+"  "+pc.nom,
       intro: urgence && moy > 0
         ? "Repère courant pour une réserve d'urgence : 3 à 6 mois de dépenses essentielles, soit "+eur(moy*3)+" à "+eur(moy*6)+" d'après tes saisies."
-        : "Laisse l'échéance vide si cette poche n'a pas de date. Tu pourras tout modifier plus tard.",
-      kind:"objectif", potId:pc.id, submit:"Enregistrer",
+        : "Tous les champs sont facultatifs. Laisse vide ce qui ne te sert pas.",
+      kind:"poche", potId:pc.id, submit:"Enregistrer",
       extra: pc.obj > 0 ? {act:"epobjdel", id:pc.id, label:"Retirer l'objectif de cette poche"} : null,
       fields:[
+        {key:"solde", label:"Déjà épargné avant l'app (€)", type:"number", value: pc.solde || ""},
         {key:"obj", label:"Montant à atteindre (€)", type:"number",
          value: pc.obj || (urgence && moy > 0 ? Math.round(moy*4) : "")},
         {key:"ech", label:"Échéance (facultatif)", type:"month", value: pc.ech || ""}
@@ -1522,13 +1737,25 @@ document.addEventListener("click", function(ev){
       if(isNaN(rv) || rv < 0){ toast("Montant invalide"); return; }
       state.revenuMois[curMK] = rv;
     }
-    if(kind === "objectif"){
+    if(kind === "poche"){
       var oc = catById(modal.potId);
-      var ov = parseFloat(String(mv.obj).replace(",","."));
       if(!oc) { closeModal(); return; }
-      if(!ov || ov <= 0){ toast("Entre un montant à atteindre"); return; }
-      oc.obj = ov;
+      var ov = parseFloat(String(mv.obj).replace(",","."));
+      var sv = parseFloat(String(mv.solde).replace(",","."));
+      if(mv.obj !== "" && (isNaN(ov) || ov < 0)){ toast("Objectif : montant invalide"); return; }
+      if(mv.solde !== "" && (isNaN(sv) || sv < 0)){ toast("Solde de départ : montant invalide"); return; }
+      if(mv.solde !== "" && sv > 0) oc.solde = sv; else delete oc.solde;
+      if(mv.obj !== "" && ov > 0) oc.obj = ov; else delete oc.obj;
       if(mv.ech) oc.ech = mv.ech; else delete oc.ech;
+    }
+    if(kind === "remb"){
+      var src = null;
+      state.tx.forEach(function(t){ if(t.id === modal.avanceId) src = t; });
+      var rm = parseFloat(String(mv.m).replace(",","."));
+      if(!src || !rm || rm <= 0){ toast("Entre un montant reçu"); return; }
+      state.tx.push({ id:uid(), ts:Date.now(), date: mv.d || todayISO(),
+                      montant: -rm, type:"depense", cat: src.cat,
+                      note: "Remboursement — "+(src.note || ""), rbDe: src.id });
     }
     if(kind === "potadd"){
       if(!mv.nom.trim()){ toast("Il manque le nom"); return; }
@@ -1536,6 +1763,7 @@ document.addEventListener("click", function(ev){
     }
     closeModal(); save(); render();
     if(document.getElementById("epsheet")) renderEpargne();
+    if(document.getElementById("rbsheet")) renderRemb();
     return;
   }
   if(a === "catdel"){
@@ -1640,6 +1868,7 @@ document.addEventListener("keydown", function(ev){
   if(ev.key !== "Escape") return;
   if(document.getElementById("scrim")) closeModal();
   else if(document.getElementById("sheet")) closeSaisie();
+  else if(document.getElementById("rbsheet")) closeRemb();
   else if(document.getElementById("epsheet")) closeEpargne();
 });
 
