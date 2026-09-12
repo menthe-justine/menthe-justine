@@ -161,6 +161,13 @@ h2.sec{font-family:var(--disp);font-size:15px;font-weight:700;margin:22px 0 0;le
   border-radius:13px;border:1px solid var(--line);margin-bottom:16px}
 .periodsel button{padding:9px;border-radius:10px;font-size:13px;font-weight:600;color:var(--ink-2)}
 .periodsel button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:var(--shadow)}
+.anneesel{display:flex;align-items:center;justify-content:center;gap:6px;margin:-6px 0 16px}
+.anneesel button{width:34px;height:34px;border-radius:11px;border:1px solid var(--line);
+  background:var(--surface);color:var(--ink-2);font-size:17px;display:grid;place-items:center}
+.anneesel button:hover:not(:disabled){background:var(--surface-2)}
+.anneesel button:disabled{opacity:.28;cursor:default}
+.anneesel span{font-family:var(--disp);font-weight:700;font-size:17px;letter-spacing:-.02em;
+  min-width:74px;text-align:center}
 .epcta{display:flex;align-items:center;gap:8px;width:100%;padding:12px 14px;margin-top:14px;
   border-radius:14px;border:1px solid var(--line);background:var(--surface-2);
   font-size:13px;font-weight:600;color:var(--ink)}
@@ -365,7 +372,7 @@ var state = null;
 
 function freshState(){
   return {
-    v:1, onboarded:false,
+    v:1, onboarded:false, jourDebut:1,
     revenu:0, revenuMois:{},
     cibles:{essentiel:50, plaisir:30, epargne:20},
     cats: DEFAULT_CATS.map(function(c,i){ return {id:"c"+i, nom:c[0], em:c[1], gr:c[2]}; }),
@@ -418,8 +425,30 @@ var JOURS = ["dimanche","lundi","mardi","mercredi","jeudi","vendredi","samedi"];
 
 function pad2(n){ return n<10 ? "0"+n : ""+n; }
 function todayISO(){ var d=new Date(); return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()); }
-function monthKey(iso){ return iso.slice(0,7); }
-function curMonthKey(){ return todayISO().slice(0,7); }
+/* Le mois budgétaire ne commence pas forcément le 1er. Si Justine est payée le 26,
+   tout ce qui est daté du 26 appartient déjà au mois suivant. Toute l'app passe par
+   cette fonction, donc il suffit de la décaler ici. */
+function monthKey(iso){
+  var mk = iso.slice(0,7);
+  var jd = (state && state.jourDebut) || 1;
+  if(jd > 1 && +iso.slice(8,10) >= jd) mk = shiftMonth(mk, 1);
+  return mk;
+}
+function curMonthKey(){ return monthKey(todayISO()); }
+function jourDebut(){ return (state && state.jourDebut) || 1; }
+/* Premier et dernier jour réels du cycle affiché */
+function debutCycle(mk){
+  var jd = jourDebut();
+  if(jd <= 1) return mk+"-01";
+  return shiftMonth(mk,-1)+"-"+pad2(jd);
+}
+function finCycle(mk){
+  var jd = jourDebut();
+  if(jd <= 1) return mk+"-"+pad2(daysInMonth(mk));
+  return mk+"-"+pad2(jd-1);
+}
+var MOIS_COURT = ["janv.","févr.","mars","avril","mai","juin","juil.","août","sept.","oct.","nov.","déc."];
+function dateCourte(iso){ return (+iso.slice(8,10))+" "+MOIS_COURT[+iso.slice(5,7)-1]; }
 function mkLabel(mk){ var p=mk.split("-"); return MOIS[+p[1]-1]+" "+p[0]; }
 function shiftMonth(mk,d){
   var p=mk.split("-"), y=+p[0], m=+p[1]-1+d;
@@ -483,9 +512,20 @@ function potColor(i, n){
 
 /* mode "mois" = le mois affiché ; mode "annee" = année civile du mois affiché */
 function periode(mode){
-  var an = curMK.slice(0,4);
-  if(mode === "annee") return {de:an+"-01", a:an+"-12", an:an};
-  return {de:curMK, a:curMK, an:an};
+  if(mode === "annee"){
+    var an = String(epAnnee || curMK.slice(0,4));
+    return {de:an+"-01", a:an+"-12", an:an};
+  }
+  return {de:curMK, a:curMK, an:curMK.slice(0,4)};
+}
+/* Bornes du sélecteur d'année : de la première saisie à l'année en cours */
+function bornesAnnees(){
+  var max = +curMonthKey().slice(0,4), min = max;
+  state.tx.forEach(function(t){
+    var a = +monthKey(t.date).slice(0,4);
+    if(a < min) min = a;
+  });
+  return {min:min, max:max};
 }
 function sommePoche(catId, p){
   var t = 0;
@@ -653,9 +693,13 @@ function renderAccueil(){
   /* hero */
   var positif = b.reste >= 0;
   var jours = "";
+  if(jourDebut() > 1) jours += " · du "+dateCourte(debutCycle(curMK))+" au "+dateCourte(finCycle(curMK));
   if(curMK === curMonthKey()){
-    var d = new Date(), rest = daysInMonth(curMK) - d.getDate();
-    jours = rest > 0 ? " · "+rest+" jour"+(rest>1?"s":"")+" avant la fin du mois" : " · dernier jour du mois";
+    var fin = new Date(finCycle(curMK)+"T12:00:00");
+    var auj = new Date(todayISO()+"T12:00:00");
+    var rest = Math.round((fin - auj) / 86400000);
+    jours += rest > 0 ? " · "+rest+" jour"+(rest>1?"s":"")+" restant"+(rest>1?"s":"")
+           : " · dernier jour du mois";
   }
   h += '<div class="hero">'+
        '<svg class="rings" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="46" fill="none" stroke="#fff" stroke-width="9"/><circle cx="50" cy="50" r="30" fill="none" stroke="#fff" stroke-width="9"/><circle cx="50" cy="50" r="14" fill="#fff"/></svg>'+
@@ -863,6 +907,14 @@ function renderReglages(){
     '<div class="field"><label for="set-rev">Revenu net habituel, par mois</label>'+
     '<input class="inp num" type="number" inputmode="decimal" id="set-rev" value="'+(state.revenu||"")+'" placeholder="0" data-act="setrev"></div>'+
     '<p class="note">Sert de base à tous les mois. Tu peux corriger un mois en particulier depuis l\'accueil.</p>'+
+    '<div class="field" style="margin-top:4px"><label for="set-jd">Jour où ton salaire tombe</label>'+
+    '<input class="inp num" type="number" inputmode="numeric" min="1" max="28" id="set-jd" value="'+jourDebut()+'" data-act="setjd"></div>'+
+    '<p class="note">'+(jourDebut() > 1
+      ? 'Ton mois budgétaire va du '+jourDebut()+' au '+(jourDebut()-1)+' du mois suivant. Le mois en cours ('+
+        mkLabel(curMonthKey())+') a donc démarré le '+dateCourte(debutCycle(curMonthKey()))+'.'
+      : 'Laisse sur 1 si tu raisonnes en mois du calendrier. Si tu es payée le 26, mets 26 : le nouveau mois s\'ouvrira le 26, en même temps que ton salaire.')+
+    '</p>'+
+    (state.tx.length ? '<p class="note" style="color:var(--or);font-weight:600">Changer ce jour redistribue les dépenses déjà saisies entre les mois. À régler une fois, au début.</p>' : '')+
     '</div>';
 
   var somme = state.cibles.essentiel + state.cibles.plaisir + state.cibles.epargne;
@@ -1022,8 +1074,9 @@ function renderSheet(){
    Écran détail de l'épargne
    ============================================================ */
 var epMode = "mois";
+var epAnnee = null;   // annee affichee en vue annuelle
 
-function openEpargne(){ epMode = "mois"; renderEpargne(); }
+function openEpargne(){ epMode = "mois"; epAnnee = +curMK.slice(0,4); renderEpargne(); }
 function closeEpargne(){
   var s = document.getElementById("epsheet");
   if(s) s.remove();
@@ -1069,13 +1122,21 @@ function renderEpargne(){
   var titrePeriode = epMode === "mois" ? "Mis de côté en "+mkLabel(curMK)
                                       : "Mis de côté en "+p.an;
 
+  var b = bornesAnnees();
   var h = '<div class="sheet-h"><h2>Ton épargne</h2>'+
     '<button class="close" data-act="epclose" aria-label="Fermer">×</button></div>'+
     '<div class="sheet-b">'+
     '<div class="periodsel">'+
       '<button data-act="epmode" data-v="mois" aria-pressed="'+(epMode==="mois")+'">'+mkLabel(curMK).split(" ")[0]+'</button>'+
-      '<button data-act="epmode" data-v="annee" aria-pressed="'+(epMode==="annee")+'">Année '+p.an+'</button>'+
+      '<button data-act="epmode" data-v="annee" aria-pressed="'+(epMode==="annee")+'">Année</button>'+
     '</div>';
+  if(epMode === "annee"){
+    h += '<div class="anneesel">'+
+      '<button data-act="epan" data-v="-1" aria-label="Année précédente"'+(+p.an <= b.min ? " disabled" : "")+'>‹</button>'+
+      '<span class="num">'+p.an+'</span>'+
+      '<button data-act="epan" data-v="1" aria-label="Année suivante"'+(+p.an >= b.max ? " disabled" : "")+'>›</button>'+
+      '</div>';
+  }
 
   h += '<div class="card"><div class="eyebrow">'+esc(titrePeriode)+'</div>'+
        '<div style="font-family:var(--disp);font-weight:800;font-size:34px;letter-spacing:-.03em;margin:7px 0 2px" class="num">'+eur(tot)+'</div>';
@@ -1394,7 +1455,16 @@ document.addEventListener("click", function(ev){
   /* épargne */
   if(a === "epopen"){ openEpargne(); return; }
   if(a === "epclose"){ closeEpargne(); return; }
-  if(a === "epmode"){ epMode = el.getAttribute("data-v"); renderEpargne(); return; }
+  if(a === "epmode"){
+    epMode = el.getAttribute("data-v");
+    if(epMode === "annee" && !epAnnee) epAnnee = +curMK.slice(0,4);
+    renderEpargne(); return;
+  }
+  if(a === "epan"){
+    var bb = bornesAnnees();
+    epAnnee = Math.min(bb.max, Math.max(bb.min, (epAnnee || +curMK.slice(0,4)) + (+el.getAttribute("data-v"))));
+    renderEpargne(); return;
+  }
   if(a === "epobj"){
     var pc = catById(el.getAttribute("data-id"));
     if(!pc) return;
@@ -1549,6 +1619,16 @@ document.addEventListener("input", function(ev){
   if(a === "obrec"){ obDraft.recur[+el.getAttribute("data-i")] = el.value; return; }
   if(a === "obcible"){ obDraft.cibles[el.getAttribute("data-g")] = el.value === "" ? 0 : +el.value; return; }
   if(a === "setrev"){ state.revenu = parseFloat(el.value) || 0; save(); return; }
+  if(a === "setjd"){
+    var jd = parseInt(el.value, 10);
+    if(isNaN(jd)) return;
+    state.jourDebut = Math.min(28, Math.max(1, jd));
+    curMK = curMonthKey();
+    save();
+    clearTimeout(el._t);
+    el._t = setTimeout(function(){ render(); }, 900);
+    return;
+  }
   if(a === "setcible"){
     state.cibles[el.getAttribute("data-g")] = el.value === "" ? 0 : +el.value;
     save(); return;
